@@ -1,0 +1,312 @@
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no" />
+    <title>1970-2010 St. Louis Demographics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.4.0/Chart.min.js"></script>
+    <link rel="stylesheet" href="https://js.arcgis.com/4.21/esri/themes/light/main.css" />
+
+    <style>
+        body {
+            padding: 0;
+            margin: 0;
+            overflow: hidden;
+
+        }
+
+        #viewDiv {
+            padding: 0;
+            margin: 0;
+            height: 95%;
+            width: 100%;
+            overflow: auto;
+        }
+
+        .header {
+            overflow: hidden;
+            padding: 20px 10px;
+            background-color: rgba(42, 26, 138, 1);
+        }
+
+        /* Style the header links */
+        .header a {
+            float: left;
+            color: white;
+            text-align: center;
+            padding: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 18px;
+            line-height: 25px;
+            border-radius: 4px;
+        }
+
+        .header a.title {
+            font-size: 25px;
+            color: white;
+            font-weight: bold;
+        }
+
+        /* Change the background color on mouse-over */
+        .header-right a:hover {
+            color: rgba(222, 79, 166, 1);
+        }
+
+        /* Style the active/current link*/
+        .header a.active {
+            background-color: white;
+            font-weight: bold;
+            color: rgba(42, 26, 138, 1);
+            ;
+        }
+
+        /* Float the link section to the right */
+        .header-right {
+            float: right;
+        }
+    </style>
+
+    <script src="https://js.arcgis.com/4.21/"></script>
+    <script>
+        require([
+            "esri/views/MapView",
+            "esri/widgets/Legend",
+            "esri/widgets/TimeSlider",
+            "esri/widgets/BasemapToggle",
+            "esri/WebMap",
+            "esri/widgets/Expand",
+            "esri/core/promiseUtils"], (
+                MapView,
+                Legend,
+                TimeSlider,
+                BasemapToggle,
+                WebMap,
+                Expand,
+                promiseUtils
+            ) => {
+            let featureLayer, populationChart, timeSlider;
+
+            const webmap = new WebMap({
+                portalItem: {
+                    // autocasts as new PortalItem()
+                    id: "54d45e00f07048bda6a802b91551bd6a"
+                }
+            });
+
+            const view = new MapView({
+                container: "viewDiv",
+                map: webmap
+            });
+
+            view.when(() => {
+                // get the first layer in the collection of operational layers in the WebMap
+                // when the resources in the MapView have loaded.
+                featureLayer = webmap.layers.getItemAt(0);
+
+                const legend = new Legend({
+                    view: view,
+
+                });
+
+                timeSlider = new TimeSlider({
+                    view
+                });
+
+                view.on("pointer-move", function (evt) {
+                    var loc = evt.mapPoint;
+                    view.hitTest(evt).then(function (response) {
+                        if (response.results.length > 0) {
+                            view.popup.open({
+                                features: [response.results[0].graphic],
+                                location: loc
+                            });
+                        }
+                        else {
+                            if (view.popup.visible) {
+                                view.popup.close();
+                            }
+                        }
+                    });
+                });
+
+                // Add widget to the bottom right corner of the view
+                view.ui.add(timeSlider, "top-right");
+                view.ui.add(legend, "top-right");
+
+                timeSlider.watch("timeExtent", () => {
+                    updatePopulationStats();
+                });
+                createPopulationChart();
+            });
+
+            // population stats for each year between 1970 - 2010
+            const sumWhitePopulation = {
+                onStatisticField: "WHITE_POP",
+                outStatisticFieldName: "white_pop_sum",
+                statisticType: "sum"
+            };
+            const sumBlackPopulation = {
+                onStatisticField: "BLACK_POP",
+                outStatisticFieldName: "black_pop_sum",
+                statisticType: "sum"
+            }
+            // stats query
+            const statQuery = {
+                outStatistics: [sumWhitePopulation, sumBlackPopulation]
+            };
+
+            // query five layerviews
+            // this will be called from the UpdatePopulationsStats function
+            const queryFeaturesForStats = (layerView) => {
+                // set the timeExtent for the stats query object. But
+                // we need to offset the timeExtent for each layer by
+                // number of years specified in the layer.timeOffset
+                let start = new Date(timeSlider.timeExtent.start);
+                let end = new Date(timeSlider.timeExtent.end);
+
+                // now we have the right timeExtent for each layer
+                // set the timeExtent for the stats query
+                statQuery.timeExtent = {
+                    start: start,
+                    end: end
+                };
+                // query the layerviews for the stats
+                console.log("layerView=", layerView);
+                return layerView.queryFeatures(statQuery).then(
+                    (response) => {
+                        console.log("response.features[0].attributes from layerView.queryFeatures(statQuery) = ", response.features[0].attributes);
+                        return response.features[0].attributes;
+                    },
+                    (e) => {
+                        return promiseUtils.resolve(e);
+                    }
+                );
+            };
+
+            // This function is called when the timeSlider's timeExtent changes
+            // It queries each layer view for stats and updates the chart
+            function updatePopulationStats() {
+                view.whenLayerView(featureLayer).then((layerView) => {
+                    queryFeaturesForStats(layerView).then(
+                        (populationStatsQueryResults) => {
+                            console.log("populationStatsQueryResults=", populationStatsQueryResults);
+
+                            if (populationStatsQueryResults.error) {
+                                return promiseUtils.resolve(populationStatsQueryResults.error);
+                            }
+
+                            const populationStats = populationStatsQueryResults;
+
+                            if (populationStats.black_pop_sum == undefined || populationStats.white_pop_sum == undefined) {
+                                delay(1000).then(() => updatePopulationStats());
+                                return;
+                            }
+
+                            // query results have been processed. update chart
+                            populationChart.data.datasets[0].data = [populationStats.white_pop_sum];
+                            populationChart.data.datasets[1].data = [populationStats.black_pop_sum];
+                            populationChart.update();
+                        }
+                    );
+                })
+            }
+
+            const infoDiv = document.getElementById("infoDiv");
+            const chartCanvas = document.getElementById("populationChart");
+            const infoDivExpand = new Expand({
+                collapsedIconClass: "esri-icon-collapse",
+                expandIconClass: "esri-icon-expand",
+                expandTooltip: "Expand population info",
+                view: view,
+                content: infoDiv,
+                expanded: true
+            });
+            view.ui.add(infoDivExpand, "top-left");
+
+            // create a bar chart to display population for given range
+            function createPopulationChart() {
+                Chart.defaults.global.defaultFontColor = "#000000";
+                populationChart = new Chart(chartCanvas.getContext("2d"), {
+                    type: "bar",
+                    data: {
+                        labels: ["Total Population"],
+                        datasets: [
+                            {
+                                label: "White",
+                                backgroundColor: "#d932b5",
+                                data: [10]
+                            },
+                            {
+                                label: "Black",
+                                backgroundColor: "#519dc9",
+                                data: [20]
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: false,
+                        legend: {
+                            position: "bottom"
+                        },
+                        title: {
+                            display: true,
+                            text: "Total Population by Selected Range",
+                            fontFamily:
+                                "'Avenir Next W05 Light','Helvetica Neue', Helvetica, Arial, sans-serif"
+                        },
+                        scales: {
+                            yAxes: [
+                                {
+                                    ticks: {
+                                        beginAtZero: true,
+                                        callback: (value) => {
+                                            if (value % 1 === 0) {
+                                                return value;
+                                            }
+                                        }
+                                    },
+                                    gridLines: {
+                                        zeroLineColor: "#d1d1d1",
+                                        color: "#696969"
+                                    }
+                                }
+                            ],
+                            xAxes: [
+                                {
+                                    gridLines: {
+                                        zeroLineColor: "#d1d1d1",
+                                        color: "#696969"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                });
+            }
+
+            function delay(time) {
+                return new Promise(resolve => setTimeout(resolve, time));
+            }
+        });
+    </script>
+</head>
+<header>
+    <div class="header">
+        <a>
+            <a class="title">St. Louis Redlining, Race, and Poverty</a>
+        </a>
+        <div class="header-right">
+            <a class="active" onclick="return false;" href="index.html">Population Over Time</a>
+            <a href="swipe.html">Redlining to Poverty</a>
+        </div>
+    </div>
+</header>
+
+<body class="calcite">
+    <div id="viewDiv"></div>
+    <div id="infoDiv" class="esri-widget">
+        <canvas id="populationChart" height="250" width="300" class="esri-widget"></canvas>
+    </div>
+</body>
+</html>
